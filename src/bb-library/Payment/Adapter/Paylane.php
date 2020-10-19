@@ -104,7 +104,8 @@ class Payment_Adapter_Paylane
         return array(
             'can_load_in_iframe'   =>  true,
             'supports_one_time_payments'   =>  true,
-            'supports_subscriptions'       =>  true,
+            // turning support for subscription off (as communicated on email with <bayu.putra@hostinger.com>, Mon, Oct 19, 2020)
+            'supports_subscriptions'       =>  false,
             'description'     =>  'Custom payment gateway allows you to give instructions how can your client pay invoice. All system, client, order and invoice details can be printed. HTML and JavaScript code is supported.',
             'form'  => array(
                 'http_prefix' => [
@@ -185,7 +186,7 @@ class Payment_Adapter_Paylane
         $paylaneData->redirectionMethod = $this->config['redirection_method'];
 
         $form = '
-            <form id="paylaneForm" action="' . $this->paylaneFormActionUrl . '" method="' . $paylaneData->redirectionMethod . '">
+            <form action="' . $this->paylaneFormActionUrl . '" method="' . $paylaneData->redirectionMethod . '">
                 <input type="hidden" name="amount" value="' . $paylaneData->amount . '" />
                 <input type="hidden" name="currency" value="' . $paylaneData->currency . '" />
                 <input type="hidden" name="merchant_id" value="' . $paylaneData->merchantId . '" />
@@ -195,24 +196,9 @@ class Payment_Adapter_Paylane
                 <input type="hidden" name="back_url" value="' . $paylaneData->backUrl . '" />
                 <input type="hidden" name="language" value="' . $this->paylaneLang . '" />
                 <input type="hidden" name="hash" value="' . $paylaneData->hash . '" />
-                <button id="paylaneFormSubmitButton" type="submit">Pay with PayLane</button>
+                <button type="submit" class="btn btn-primary btn-small">Pay with PayLane >></button>
             </form>
         ';
-
-        // Use self submitting form when payment is done from invoice list
-        if(isset($this->config['auto_redirect']) && $this->config['auto_redirect']) {
-            $form .= '
-                <h3>Redirecting to Paylane...</h3>
-                <script type="text/javascript">
-                    document.addEventListener("DOMContentLoaded", (event) => {
-                        document.getElementById("paylaneFormSubmitButton").style.display = "none";
-                        setTimeout(function () {
-                            document.getElementById("paylaneForm").submit();
-                        }, 1000);
-                    })
-                </script>
-            ';
-        }
 
         return $form;
     }
@@ -235,6 +221,7 @@ class Payment_Adapter_Paylane
     public function processTransaction($api_admin, $id, $data, $gateway_id)
     {
         $invoice = $api_admin->invoice_get(array('id'=>$data['get']['bb_invoice_id']));
+        $clientId = $invoice['client']['id'];
 
         $ipn = $data['post'];
         $tx = $api_admin->invoice_transaction_get(array('id'=>$id));
@@ -247,7 +234,7 @@ class Payment_Adapter_Paylane
             $this->paylaneTransactionType,
             $ipn
         )){
-            throw new Payment_Exception('Mismatched Paylane Response Hash');
+            throw new Payment_Exception('Invalid Payment, Mismatched Response Hash');
         }
 
         if ($this->isIpnDuplicate($ipn)){
@@ -271,7 +258,21 @@ class Payment_Adapter_Paylane
         }
 
         if ($ipn['status'] == 'PERFORMED') {
-            $api_admin->invoice_mark_as_paid(['id' => $invoice['id']]);
+            $bd = array(
+                'id'            =>  $clientId,
+                'amount'        =>  $ipn['amount'],
+                'description'   =>  'Paylane transaction '.$ipn['id_sale'],
+                'type'          =>  'Paylane',
+                'rel_id'        =>  $ipn['id_sale'],
+            );
+            if ($this->isIpnDuplicate($ipn)){
+                throw new Payment_Exception('IPN is duplicate');
+            }
+            $api_admin->client_balance_add_funds($bd);
+            if($tx['invoice_id']) {
+                $api_admin->invoice_pay_with_credits(array('id'=>$tx['invoice_id']));
+            }
+            $api_admin->invoice_batch_pay_with_credits(array('client_id'=>$clientId));
         }
     }
 
